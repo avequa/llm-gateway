@@ -1,0 +1,31 @@
+# Пример конфига: агенты обращаются к алиасам small, main и validator, шлюз сам выбирает модель и делает fallback
+server:
+  addr: 127.0.0.1:4000
+  shutdown_timeout: 15s
+
+upstreams:
+  ollama:
+    base_url: http://localhost:11434/v1
+    timeout: 120s
+    max_concurrent: 2
+  # облачный API подключается так же, ключ берется из переменной окружения, а не из файла
+  # openrouter:
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   timeout: 60s
+
+models:
+  small:
+    targets:
+      - upstream: ollama
+        model: qwen3:4b
+  main:
+    targets:
+      - upstream: ollama
+        model: qwen3:8b
+      - upstream: ollama
+        model: qwen3:4b
+  validator:
+    targets:
+      - upstream: ollama
+        model: gemma3:4b

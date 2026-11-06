@@ -1,0 +1,12 @@
+# Правила Git для текстовых файлов и окончаний строк
+* text=auto
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.log text eol=lf
+Dockerfile text eol=lf
+*.md text eol=lf
+Makefile text eol=lf

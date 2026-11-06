@@ -1,0 +1,20 @@
+# Локальные кеши, бинарники и отчеты, которые не должны попадать в Git
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+/vendor/
+
+/.cache/
+/coverage.html
+/coverage.xml
+/report.xml
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+.env
+/config.yaml
