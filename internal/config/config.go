@@ -20,7 +20,11 @@ const (
 	DefaultShutdownTimeout = 15 * time.Second
 	DefaultTimeout         = 120 * time.Second
 	DefaultMaxConcurrent   = 4
+	DefaultQueueTimeout    = 60 * time.Second
 )
+
+// reservedParams - поля запроса, которые нельзя задавать в params: их определяет агент или сам шлюз
+var reservedParams = []string{"model", "messages", "stream"}
 
 // Config - весь конфиг шлюза
 type Config struct {
@@ -41,12 +45,15 @@ type Upstream struct {
 	APIKeyEnv     string        `yaml:"api_key_env"`
 	Timeout       time.Duration `yaml:"timeout"`
 	MaxConcurrent int           `yaml:"max_concurrent"`
+	QueueTimeout  time.Duration `yaml:"queue_timeout"`
 	APIKey        string        `yaml:"-"`
 }
 
 // Model - алиас модели, который видят агенты, и цепочка целей для fallback по порядку
 type Model struct {
-	Targets []Target `yaml:"targets"`
+	Targets   []Target       `yaml:"targets"`
+	Params    map[string]any `yaml:"params"`
+	MaxTokens int            `yaml:"max_tokens"`
 }
 
 // Target - конкретная модель на конкретном апстриме
@@ -98,6 +105,9 @@ func (c *Config) applyDefaults() {
 		if u.MaxConcurrent == 0 {
 			u.MaxConcurrent = DefaultMaxConcurrent
 		}
+		if u.QueueTimeout == 0 {
+			u.QueueTimeout = DefaultQueueTimeout
+		}
 		u.BaseURL = strings.TrimSuffix(u.BaseURL, "/")
 		c.Upstreams[name] = u
 	}
@@ -138,17 +148,28 @@ func (u Upstream) validate(name string) []error {
 	if u.MaxConcurrent < 0 {
 		errs = append(errs, fmt.Errorf("upstreams.%s.max_concurrent must be positive", name))
 	}
+	if u.QueueTimeout < 0 {
+		errs = append(errs, fmt.Errorf("upstreams.%s.queue_timeout must be positive", name))
+	}
 	return errs
 }
 
-// validateModel - проверяет один алиас: есть цели, каждая ссылается на известный апстрим и задает модель
+// validateModel - проверяет один алиас: цели ссылаются на известные апстримы, params не трогают служебные поля
 func (c *Config) validateModel(alias string) []error {
 	model := c.Models[alias]
+	var errs []error
 	if len(model.Targets) == 0 {
-		return []error{fmt.Errorf("models.%s needs at least one target", alias)}
+		errs = append(errs, fmt.Errorf("models.%s needs at least one target", alias))
+	}
+	if model.MaxTokens < 0 {
+		errs = append(errs, fmt.Errorf("models.%s.max_tokens must be positive", alias))
+	}
+	for _, key := range reservedParams {
+		if _, ok := model.Params[key]; ok {
+			errs = append(errs, fmt.Errorf("models.%s.params cannot set %q", alias, key))
+		}
 	}
 
-	var errs []error
 	for i, t := range model.Targets {
 		if _, ok := c.Upstreams[t.Upstream]; !ok {
 			errs = append(errs, fmt.Errorf("models.%s.targets[%d]: unknown upstream %q", alias, i, t.Upstream))
@@ -187,7 +208,7 @@ func (c *Config) UpstreamNames() []string {
 	return sortedKeys(c.Upstreams)
 }
 
-// sortedKeys - ключи map по алфавиту
+// sortedKeys - ключи map по алфавиту, чтобы ошибки и вывод не зависели от порядка map
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

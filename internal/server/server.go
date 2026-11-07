@@ -6,39 +6,88 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/avequa/llm-gateway/internal/config"
+	"github.com/avequa/llm-gateway/internal/metrics"
 	"github.com/avequa/llm-gateway/internal/upstream"
 )
 
 // ownedBy - значение owned_by в списке моделей: алиасы принадлежат шлюзу, а не конкретному провайдеру
 const ownedBy = "llm-gateway"
 
+// tracerName - имя трейсера шлюза в OpenTelemetry
+const tracerName = "github.com/avequa/llm-gateway/internal/server"
+
 // Server - HTTP-обработчик шлюза
 type Server struct {
 	cfg       config.Config
 	upstreams map[string]*upstream.Client
 	logger    *slog.Logger
+	metrics   *metrics.Metrics
+	tracer    trace.Tracer
 	started   time.Time
 	mux       *http.ServeMux
+	handler   http.Handler
 }
 
-// New - создает сервер и регистрирует маршруты
-func New(cfg config.Config, logger *slog.Logger) *Server {
+// Option - необязательная настройка сервера
+type Option func(*options)
+
+// options - собранные необязательные настройки
+type options struct {
+	metrics        *metrics.Metrics
+	tracerProvider trace.TracerProvider
+}
+
+// WithMetrics - использовать переданные метрики, по умолчанию создаются новые
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(o *options) { o.metrics = m }
+}
+
+// WithTracerProvider - писать трейсы через переданный провайдер, по умолчанию трейсы выключены
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(o *options) { o.tracerProvider = tp }
+}
+
+// New - создает сервер, клиентов апстримов и регистрирует маршруты
+func New(cfg config.Config, logger *slog.Logger, opts ...Option) *Server {
+	o := options{tracerProvider: noop.NewTracerProvider()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.metrics == nil {
+		o.metrics = metrics.New()
+	}
+
 	s := &Server{
 		cfg:       cfg,
 		upstreams: make(map[string]*upstream.Client, len(cfg.Upstreams)),
 		logger:    logger,
+		metrics:   o.metrics,
+		tracer:    o.tracerProvider.Tracer(tracerName),
 		started:   time.Now(),
 		mux:       http.NewServeMux(),
 	}
 	for name, u := range cfg.Upstreams {
-		s.upstreams[name] = upstream.New(name, u)
+		s.upstreams[name] = upstream.New(name, u, upstream.WithTracerProvider(o.tracerProvider))
 	}
 
 	s.route(http.MethodGet, "/healthz", s.handleHealth)
+	s.route(http.MethodGet, "/metrics", s.metrics.Handler().ServeHTTP)
 	s.route(http.MethodGet, "/v1/models", s.handleModels)
 	s.route(http.MethodPost, "/v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("/", s.handleNotFound)
+
+	s.handler = otelhttp.NewHandler(s.mux, "llm-gateway",
+		otelhttp.WithTracerProvider(o.tracerProvider),
+		otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})),
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/metrics" && r.URL.Path != "/healthz" }),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }),
+	)
 	return s
 }
 
@@ -52,9 +101,9 @@ func (s *Server) route(method, path string, handler http.HandlerFunc) {
 	})
 }
 
-// ServeHTTP - передает запрос маршрутизатору, благодаря этому Server можно отдать http.Server как Handler
+// ServeHTTP - передает запрос маршрутизатору через обертку трейсов, благодаря этому Server можно отдать http.Server
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 // handleHealth - проба живости для Docker и Kubernetes

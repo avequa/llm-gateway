@@ -12,10 +12,18 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/avequa/llm-gateway/internal/config"
 	"github.com/avequa/llm-gateway/internal/server"
+	"github.com/avequa/llm-gateway/internal/telemetry"
 )
+
+// version - версия шлюза, задается при сборке: -ldflags "-X main.version=1.2.3"
+var version = "dev"
+
+// telemetryFlushTimeout - сколько ждать отправки накопленных трейсов при остановке
+const telemetryFlushTimeout = 5 * time.Second
 
 // main - запускает шлюз, Ctrl+C и SIGTERM завершают его корректно
 func main() {
@@ -26,7 +34,12 @@ func main() {
 }
 
 // run - разбирает флаги, загружает конфиг и обслуживает HTTP до отмены context; логи пишутся в stderr
+// первый аргумент healthcheck запускает проверку здоровья вместо сервера
 func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "healthcheck" {
+		return runHealthcheck(ctx, args[1:], stderr)
+	}
+
 	fs := flag.NewFlagSet("llm-gateway", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "config.yaml", "path to the YAML config")
@@ -49,13 +62,29 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	logRoutes(logger, cfg)
 
+	tracerProvider, flushTraces, err := telemetry.Setup(ctx, version, getenv)
+	if err != nil {
+		logger.Error("cannot set up tracing", slog.String("error", err.Error()))
+		return 1
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), telemetryFlushTimeout)
+		defer cancel()
+		if flushErr := flushTraces(flushCtx); flushErr != nil {
+			logger.Warn("cannot flush traces", slog.String("error", flushErr.Error()))
+		}
+	}()
+	logger.Info("telemetry", slog.String("version", version), slog.Bool("tracing", telemetry.Enabled(getenv)),
+		slog.String("metrics", "/metrics"))
+
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Server.Addr)
 	if err != nil {
 		logger.Error("cannot listen", slog.String("addr", cfg.Server.Addr), slog.String("error", err.Error()))
 		return 1
 	}
 
-	if err := server.Run(ctx, listener, server.New(cfg, logger), cfg.Server.ShutdownTimeout, logger); err != nil {
+	handler := server.New(cfg, logger, server.WithTracerProvider(tracerProvider))
+	if err := server.Run(ctx, listener, handler, cfg.Server.ShutdownTimeout, logger); err != nil {
 		logger.Error("server stopped with error", slog.String("error", err.Error()))
 		return 1
 	}
@@ -87,6 +116,8 @@ func logRoutes(logger *slog.Logger, cfg config.Config) {
 		for _, t := range cfg.Models[alias].Targets {
 			chain = append(chain, t.Upstream+"/"+t.Model)
 		}
-		logger.Info("route", slog.String("model", alias), slog.String("targets", strings.Join(chain, " -> ")))
+		model := cfg.Models[alias]
+		logger.Info("route", slog.String("model", alias), slog.String("targets", strings.Join(chain, " -> ")),
+			slog.Any("params", model.Params), slog.Int("maxTokens", model.MaxTokens))
 	}
 }

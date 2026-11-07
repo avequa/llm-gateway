@@ -1,0 +1,60 @@
+# Правила алертов шлюза: недоступность, ошибки, медленные ответы, частый fallback, очередь к видеокарте
+groups:
+  - name: llm-gateway
+    rules:
+      - alert: LLMGatewayDown
+        expr: up{job="llm-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Шлюз не отвечает на /metrics
+          description: Prometheus не может забрать метрики {{ $labels.instance }} дольше минуты
+
+      - alert: LLMHighErrorRate
+        expr: |
+          sum(rate(llm_gateway_requests_total{status=~"5..|429"}[5m]))
+            / sum(rate(llm_gateway_requests_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Больше 20% запросов к моделям заканчиваются ошибкой
+          description: Доля ответов 5xx и 429 за 5 минут {{ $value | humanizePercentage }}
+
+      - alert: LLMSlowResponses
+        expr: |
+          histogram_quantile(0.95, sum by (le, model) (rate(llm_gateway_request_duration_seconds_bucket[10m]))) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Роль {{ $labels.model }} отвечает медленно
+          description: p95 длительности ответа {{ $value | humanizeDuration }}
+
+      - alert: LLMSlowFirstToken
+        expr: |
+          histogram_quantile(0.95, sum by (le, model) (rate(llm_gateway_time_to_first_token_seconds_bucket[10m]))) > 15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Роль {{ $labels.model }} долго молчит перед первым токеном
+          description: p95 времени до первого токена {{ $value | humanizeDuration }}
+
+      - alert: LLMFrequentFallback
+        expr: sum by (model, target) (increase(llm_gateway_target_failures_total[15m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: Цель {{ $labels.target }} роли {{ $labels.model }} часто не отвечает
+          description: "{{ $value | humanize }} неудачных попыток за 15 минут, запросы уходят на запасные модели"
+
+      - alert: LLMQueueBacklog
+        expr: max by (upstream) (llm_gateway_upstream_queue_waiting) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Очередь к апстриму {{ $labels.upstream }} не рассасывается
+          description: "{{ $value }} запросов ждут слот дольше 5 минут: модель перегружена или зависла"

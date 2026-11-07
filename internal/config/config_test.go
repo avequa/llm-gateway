@@ -25,6 +25,10 @@ models:
       - upstream: ollama
         model: qwen3:4b
   main:
+    params:
+      reasoning_effort: none
+      temperature: 0.2
+    max_tokens: 2048
     targets:
       - upstream: ollama
         model: qwen3:8b
@@ -49,7 +53,8 @@ func TestParse_Valid(t *testing.T) {
 	}
 
 	ollama := cfg.Upstreams["ollama"]
-	if ollama.BaseURL != "http://localhost:11434/v1" || ollama.Timeout != DefaultTimeout || ollama.MaxConcurrent != DefaultMaxConcurrent {
+	if ollama.BaseURL != "http://localhost:11434/v1" || ollama.Timeout != DefaultTimeout ||
+		ollama.MaxConcurrent != DefaultMaxConcurrent || ollama.QueueTimeout != DefaultQueueTimeout {
 		t.Fatalf("ollama = %+v, want defaults and base_url without trailing slash", ollama)
 	}
 
@@ -61,8 +66,12 @@ func TestParse_Valid(t *testing.T) {
 	if got := strings.Join(cfg.Aliases(), ","); got != "main,small" {
 		t.Fatalf("Aliases = %s", got)
 	}
-	if got := cfg.Models["main"].Targets; len(got) != 2 || got[1] != (Target{Upstream: "cloud", Model: "llama-3.3-70b"}) {
-		t.Fatalf("main targets = %+v", got)
+	main := cfg.Models["main"]
+	if len(main.Targets) != 2 || main.Targets[1] != (Target{Upstream: "cloud", Model: "llama-3.3-70b"}) {
+		t.Fatalf("main targets = %+v", main.Targets)
+	}
+	if main.MaxTokens != 2048 || main.Params["reasoning_effort"] != "none" || main.Params["temperature"] != 0.2 {
+		t.Fatalf("main params = %+v, max_tokens = %d", main.Params, main.MaxTokens)
 	}
 }
 
@@ -108,13 +117,13 @@ func TestParse_Errors(t *testing.T) {
 			name: "bad upstream fields",
 			yaml: `
 upstreams:
-  a: {base_url: "ftp://x", timeout: -1s, max_concurrent: -2}
+  a: {base_url: "ftp://x", timeout: -1s, max_concurrent: -2, queue_timeout: -1s}
   b: {base_url: "localhost:11434"}
 models:
   m: {targets: [{upstream: a, model: x}]}
 `,
 			want: []string{
-				`upstreams.a.base_url "ftp://x"`, "upstreams.a.timeout", "upstreams.a.max_concurrent",
+				`upstreams.a.base_url "ftp://x"`, "upstreams.a.timeout", "upstreams.a.max_concurrent", "upstreams.a.queue_timeout",
 				`upstreams.b.base_url "localhost:11434"`,
 			},
 		},
@@ -126,9 +135,13 @@ upstreams:
 models:
   empty: {}
   broken: {targets: [{upstream: nope, model: x}, {upstream: a}]}
+  params: {targets: [{upstream: a, model: x}], max_tokens: -1, params: {model: x, stream: true}}
 `,
 			want: []string{
 				"models.empty needs at least one target",
+				"models.params.max_tokens must be positive",
+				`models.params.params cannot set "model"`,
+				`models.params.params cannot set "stream"`,
 				`models.broken.targets[0]: unknown upstream "nope"`,
 				"models.broken.targets[1]: model is required",
 			},

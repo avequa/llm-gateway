@@ -1,0 +1,11 @@
+# Дашборды Grafana подгружаются из файлов при старте
+apiVersion: 1
+
+providers:
+  - name: llm-gateway
+    folder: LLM Gateway
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

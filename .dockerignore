@@ -1,0 +1,8 @@
+.git
+.github
+bin
+deploy
+coverage.*
+*.out
+config.yaml
+.env

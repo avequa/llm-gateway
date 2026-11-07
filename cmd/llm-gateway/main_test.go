@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +66,33 @@ func TestRun_Errors(t *testing.T) {
 		{"bad log level", []string{"--log-level", "loud"}, 2},
 		{"missing config", []string{"--config", filepath.Join(t.TempDir(), "nope.yaml")}, 2},
 		{"port is busy", []string{"--config", writeConfig(t, busy.Addr().String())}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := run(context.Background(), tt.args, os.Getenv, &bytes.Buffer{}); got != tt.want {
+				t.Fatalf("code = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHealthcheck - подкоманда healthcheck возвращает 0 для 200, 1 для другого кода и недоступного адреса, 2 для неверного флага
+func TestHealthcheck(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	defer ok.Close()
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer broken.Close()
+
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"healthy", []string{"healthcheck", "--url", ok.URL}, 0},
+		{"bad status", []string{"healthcheck", "--url", broken.URL}, 1},
+		{"unreachable", []string{"healthcheck", "--url", "http://127.0.0.1:1/healthz"}, 1},
+		{"bad url", []string{"healthcheck", "--url", "://"}, 1},
+		{"unknown flag", []string{"healthcheck", "--nope"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

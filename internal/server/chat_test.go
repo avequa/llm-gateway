@@ -31,6 +31,7 @@ func newFakeUpstream(t *testing.T, respond func(w http.ResponseWriter, r *http.R
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.lastPath = r.URL.Path
 		f.lastAuth = r.Header.Get("Authorization")
+		f.lastBody = nil
 		_ = json.NewDecoder(r.Body).Decode(&f.lastBody)
 		respond(w, r)
 	}))
@@ -45,7 +46,7 @@ func okResponse(w http.ResponseWriter, _ *http.Request) {
 }
 
 // gatewayFor - сервер шлюза с одним апстримом и алиасом main
-func gatewayFor(t *testing.T, upstreamURL, extra string) *Server {
+func gatewayFor(t *testing.T, upstreamURL, extra string, opts ...Option) *Server {
 	t.Helper()
 	cfg, err := config.Parse(fmt.Appendf(nil, `
 upstreams:
@@ -56,7 +57,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, discardLogger())
+	return New(cfg, discardLogger(), opts...)
 }
 
 // post - отправляет POST /v1/chat/completions с заданным телом
