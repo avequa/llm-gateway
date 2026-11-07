@@ -1,92 +1,74 @@
-# LLM Gateway
+# llm-gateway
 
-[![ci](https://github.com/avequa/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/avequa/llm-gateway/actions/workflows/ci.yml)
-![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
-![OpenAI API](https://img.shields.io/badge/API-OpenAI--compatible-412991)
-![Prometheus](https://img.shields.io/badge/metrics-Prometheus-E6522C?logo=prometheus&logoColor=white)
-![OpenTelemetry](https://img.shields.io/badge/traces-OpenTelemetry-425CC7?logo=opentelemetry&logoColor=white)
+HTTP-шлюз к LLM с API как у OpenAI. Клиент пишет в поле `model` не модель, а роль из конфига (`small`, `main`, `validator`). Шлюз отправляет запрос первой модели роли, а если она не ответила, пробует следующую. К каждому апстриму держит очередь, пишет метрики Prometheus, трейсы OpenTelemetry и логи.
 
-OpenAI-совместимый шлюз к языковым моделям на Go. Агенты обращаются к одной точке и просят **роль** (`small`, `main`, `validator`), а шлюз сам выбирает модель, переключается на запасную при сбое, держит очередь к видеокарте, ограничивает генерацию и пишет метрики и трейсы.
+Используется в проекте Incident Copilot: агенты на LangGraph ходят к моделям только через этот шлюз.
 
-Часть проекта **Incident Copilot** — мультиагентной системы разбора инцидентов: агенты на LangGraph, инструменты на Go ([incident-radar](https://github.com/avequa/incident-radar)), модели через этот шлюз.
+## Запуск в Docker
 
-```mermaid
-flowchart LR
-    R["Роутер<br/>model=small"] --> G
-    A["Аналитик<br/>model=main"] --> G
-    V["Валидатор<br/>model=validator"] --> G
-    G["llm-gateway :4000<br/>роли → модели · fallback<br/>очередь · max_tokens"] --> O[("Ollama на GPU<br/>qwen3, gemma3")]
-    G -.-> C[("Облачный API")]
-    G -- /metrics --> P[Prometheus] --> AM[Alertmanager]
-    P --> GR[Grafana]
-    G -- OTLP --> J[Jaeger]
-```
-
-## Возможности
-
-- **Роли вместо моделей.** Агент пишет `model: "main"`, шлюз по конфигу подставляет реальную модель. Чтобы сменить модель, достаточно правки одной строки YAML, код агентов не меняется.
-- **Fallback.** У роли цепочка моделей. Если модель не найдена (404), перегружена (429), упала (5xx) или не ответила вовремя, шлюз пробует следующую. При ошибке запроса (400) не переключается. Работает и для стриминга.
-- **Очередь к апстриму.** `max_concurrent` слотов на сервер моделей: для Ollama на одной видеокарте это один запрос за раз, остальные ждут. Если очередь не сдвинулась за `queue_timeout`, клиент получает 429 с `Retry-After`.
-- **Параметры ролей.** `params` — значения по умолчанию (например, `reasoning_effort: none`, `temperature`), `max_tokens` — потолок длины ответа.
-- **Прозрачный прокси.** Тело запроса не переписывается целиком, меняется только `model`: `tools`, `response_format` и любые новые поля API проходят как есть. Стриминг SSE передаётся по кусочкам сразу. Если агент отключился, генерация в модели отменяется.
-- **Наблюдаемость.** Метрики Prometheus по ролям и моделям: запросы, латентность, время до первого токена, токены, fallback, очередь. Трейсы OpenTelemetry с атрибутами `gen_ai.*`, `traceId` в каждой строке лога.
-- **Готовый стек** в docker-compose: Ollama на GPU, Prometheus с правилами алертов, Alertmanager, Grafana с дашбордом, Jaeger.
-- **Аккуратная эксплуатация:** graceful shutdown, ошибки в формате OpenAI, строгая проверка конфига (все ошибки сразу), ключи API только из окружения, образ distroless от непривилегированного пользователя, healthcheck без shell.
-
-## Быстрый старт
-
-### Локально
-
-Нужны Go 1.26+ и [Ollama](https://ollama.com) с одной маленькой моделью:
+Нужен Docker с поддержкой NVIDIA GPU (Docker Desktop с WSL 2 или Docker Engine с NVIDIA Container Toolkit).
 
 ```bash
-ollama pull qwen3:4b
-cp config.example.yaml config.yaml
-make run                                    # http://127.0.0.1:4000
-```
-
-```bash
-curl -s localhost:4000/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"small","messages":[{"role":"user","content":"Скажи одно слово: привет"}]}'
-```
-
-В заголовках ответа `X-Gateway-Target` показывает, какая модель ответила, а `X-Gateway-Attempts` — с какой попытки.
-
-### Всё в Docker: Ollama на GPU и стек наблюдаемости
-
-Нужны Docker с поддержкой NVIDIA GPU (Docker Desktop на Windows с WSL 2 или Docker Engine с NVIDIA Container Toolkit) и одна маленькая модель.
-
-```bash
-cp .env.example .env                # путь к уже скачанным моделям Ollama, если они есть
-make up                             # Ollama, шлюз, Prometheus, Alertmanager, Grafana, Jaeger
-make pull MODEL=qwen3:4b            # если моделей ещё нет
-make models                         # PROCESSOR должен быть 100% GPU после первого запроса
-make smoke                          # пять коротких запросов для проверки
+cp .env.example .env          # путь к уже скачанным моделям Ollama и пароль Grafana
+make up                       # шлюз, Ollama, Prometheus, Alertmanager, Grafana, Jaeger
+make pull MODEL=qwen3:4b      # скачать модель, если её ещё нет
+make smoke                    # 5 коротких запросов к роли small
 ```
 
 | Сервис | Адрес |
 |---|---|
-| Шлюз | http://127.0.0.1:4000 |
+| шлюз | http://127.0.0.1:4000 |
 | Ollama | http://127.0.0.1:11434 |
-| Grafana (дашборд «LLM Gateway», вход admin / admin) | http://127.0.0.1:3000 |
+| Grafana (admin / пароль из `.env`) | http://127.0.0.1:3000 |
 | Prometheus | http://127.0.0.1:9090 |
 | Alertmanager | http://127.0.0.1:9093 |
 | Jaeger | http://127.0.0.1:16686 |
 
-Шлюз находит Ollama по имени сервиса, поэтому стек одинаково работает на Linux и в Docker Desktop с WSL. Если на машине уже стоит Ollama как системная служба, её стоит выключить (`sudo systemctl disable --now ollama`): иначе две Ollama делят одну видеокарту. Уже скачанные модели подключаются в контейнер из папки, указанной в `.env`, и заново не скачиваются.
+Остановить: `make down`. Посмотреть модели и что сейчас в видеопамяти: `make models`.
 
-Ollama ограничена одним запросом на модель и двумя моделями в видеопамяти, через 5 минут простоя модель выгружается. Все порты открыты только на `127.0.0.1`. У сервисов наблюдаемости свои лимиты памяти, вместе они занимают около 0.5 ГБ RAM. `make down` останавливает стек, `make ps` показывает потребление памяти.
+Если Ollama уже стоит на машине как служба, её нужно выключить, иначе две Ollama будут делить видеокарту и порт 11434:
 
-### Из Python
+```bash
+sudo systemctl disable --now ollama
+```
+
+Конфиг шлюза для Docker лежит в `deploy/gateway.yaml`.
+
+## Запуск без Docker
+
+Нужны Go 1.26+ и Ollama на `localhost:11434`.
+
+```bash
+ollama pull qwen3:4b
+cp config.example.yaml config.yaml
+make run
+```
+
+## Запрос
+
+```bash
+curl -i localhost:4000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"small","messages":[{"role":"user","content":"Скажи одно слово: привет"}]}'
+```
+
+В ответе есть заголовки `X-Gateway-Target` (какая модель ответила) и `X-Gateway-Attempts` (с какой попытки).
+
+Из Python:
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="unused")
-client.chat.completions.create(model="main", messages=[{"role": "user", "content": "Когда начался инцидент?"}])
 
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="unused")
+resp = client.chat.completions.create(model="main", messages=[{"role": "user", "content": "привет"}])
+```
+
+```python
 from langchain_openai import ChatOpenAI
+
 llm = ChatOpenAI(base_url="http://127.0.0.1:4000/v1", api_key="unused", model="main")
 ```
+
+Тело запроса передаётся в модель как есть, меняется только `model`. Поэтому `tools`, `response_format`, `stream` и остальные поля работают так же, как с OpenAI.
 
 ## Конфигурация
 
@@ -98,100 +80,130 @@ server:
 upstreams:
   ollama:
     base_url: http://localhost:11434/v1
-    timeout: 120s          # ожидание начала ответа, а не всей генерации
-    max_concurrent: 1      # одна видеокарта — один запрос
-    queue_timeout: 180s    # сколько ждать слота, потом 429
-  # openrouter:
-  #   base_url: https://openrouter.ai/api/v1
-  #   api_key_env: OPENROUTER_API_KEY
+    timeout: 120s
+    max_concurrent: 1
+    queue_timeout: 180s
 
 models:
-  main:
-    params: {reasoning_effort: none}
-    max_tokens: 2048
+  small:
+    params:
+      reasoning_effort: none
+      temperature: 0.1
+    max_tokens: 512
     targets:
-      - {upstream: ollama, model: qwen3:4b}
       - {upstream: ollama, model: qwen3:1.7b}
-  validator:               # другое семейство моделей, чем main
-    params: {temperature: 0}
+      - {upstream: ollama, model: qwen3:4b}
+  validator:
+    params:
+      temperature: 0
+    max_tokens: 1024
     targets:
       - {upstream: ollama, model: gemma3:4b}
 ```
 
-Полный пример с комментариями — [config.example.yaml](config.example.yaml), конфиг для Docker — [deploy/gateway.yaml](deploy/gateway.yaml).
-
-| Поле | По умолчанию | Смысл |
+| Поле | По умолчанию | Что значит |
 |---|---|---|
 | `server.addr` | `127.0.0.1:4000` | адрес шлюза |
 | `server.shutdown_timeout` | `15s` | сколько ждать активные запросы при остановке |
-| `upstreams.*.base_url` | — | OpenAI-совместимый адрес (`.../v1`) |
-| `upstreams.*.api_key_env` | — | имя переменной окружения с ключом |
-| `upstreams.*.timeout` | `120s` | ожидание начала ответа модели |
-| `upstreams.*.max_concurrent` | `4` | одновременных запросов к апстриму |
-| `upstreams.*.queue_timeout` | `60s` | ожидание свободного слота |
-| `models.*.targets` | — | цепочка `{upstream, model}` для fallback |
-| `models.*.params` | — | значения по умолчанию для полей запроса |
-| `models.*.max_tokens` | без потолка | потолок длины ответа |
+| `upstreams.<имя>.base_url` | обязательно | адрес OpenAI-совместимого API, заканчивается на `/v1` |
+| `upstreams.<имя>.api_key_env` | нет | имя переменной окружения с ключом API |
+| `upstreams.<имя>.timeout` | `120s` | сколько ждать начала ответа модели |
+| `upstreams.<имя>.max_concurrent` | `4` | сколько запросов одновременно отправлять в апстрим |
+| `upstreams.<имя>.queue_timeout` | `60s` | сколько запрос может ждать в очереди |
+| `models.<роль>.targets` | обязательно | модели по порядку: `{upstream, model}` |
+| `models.<роль>.params` | нет | значения полей запроса, если клиент их не передал. Нельзя задавать `model`, `messages`, `stream` |
+| `models.<роль>.max_tokens` | нет | максимум для `max_tokens`, большее значение урезается |
 
-Конфиг разбирается строго: опечатка в имени поля — ошибка. Все ошибки выводятся сразу, с путём к полю.
+Неизвестные поля в конфиге считаются ошибкой. При запуске выводятся сразу все ошибки конфига.
 
-Переменные окружения: `OTEL_EXPORTER_OTLP_ENDPOINT` включает трейсы (например, `http://jaeger:4318`), `OTEL_SERVICE_NAME` задаёт имя сервиса (по умолчанию `llm-gateway`). Флаги: `--config`, `--log-format text|json`, `--log-level`.
+Флаги: `--config` (по умолчанию `config.yaml`), `--log-format text|json`, `--log-level debug|info|warn|error`.
 
-## HTTP API
+Переменные окружения: `OTEL_EXPORTER_OTLP_ENDPOINT` включает отправку трейсов (например, `http://jaeger:4318`), `OTEL_SERVICE_NAME` меняет имя сервиса в трейсах (по умолчанию `llm-gateway`).
 
-| Метод и путь | Ответ |
+Подкоманда `llm-gateway healthcheck` проверяет `/healthz` и завершается с кодом 0, если шлюз отвечает, 1 если нет, 2 при неверных аргументах. Она нужна для HEALTHCHECK в образе без shell.
+
+## API
+
+| Метод и путь | Что возвращает |
 |---|---|
-| `POST /v1/chat/completions` | ответ модели (JSON или поток SSE) в формате OpenAI |
-| `GET /v1/models` | список ролей в формате OpenAI |
+| `POST /v1/chat/completions` | ответ модели в формате OpenAI, JSON или поток SSE |
+| `GET /v1/models` | список ролей |
 | `GET /metrics` | метрики Prometheus |
 | `GET /healthz` | `ok` |
 
-| Ситуация | Код |
-|---|---|
-| неизвестная роль | 404 `model_not_found` со списком ролей |
-| неверное тело / `max_tokens` | 400, тело больше 16 MiB — 413 |
-| все модели роли не ответили | ошибка последней модели, 502 `upstream_unavailable` или 504 `upstream_timeout` |
-| очередь не сдвинулась | 429 `upstream_busy`, `Retry-After: 5` |
+Когда шлюз переходит к следующей модели роли: ответ 404, 408, 429, 5xx, таймаут или сетевая ошибка. На остальные ошибки (например, 400) ответ модели сразу уходит клиенту.
 
-## Наблюдаемость
+| Ситуация | Ответ |
+|---|---|
+| неизвестная роль | 404 `model_not_found`, в тексте список ролей |
+| неправильное тело или `max_tokens` | 400 |
+| тело больше 16 MiB | 413 |
+| запрос ждал в очереди дольше `queue_timeout` | 429 `upstream_busy`, заголовок `Retry-After: 5` |
+| ни одна модель роли не ответила | 502 `upstream_unavailable` или 504 `upstream_timeout` |
+
+Ошибки возвращаются в формате OpenAI: `{"error": {"message", "type", "code"}}`.
+
+Если клиент отключился посреди ответа, запрос к модели отменяется.
+
+## Метрики, алерты, трейсы
 
 | Метрика | Тип | Метки |
 |---|---|---|
 | `llm_gateway_requests_total` | counter | `model`, `target`, `status` |
 | `llm_gateway_request_duration_seconds` | histogram | `model`, `stream` |
 | `llm_gateway_time_to_first_token_seconds` | histogram | `model`, `target` |
-| `llm_gateway_tokens_total` | counter | `model`, `target`, `type` (prompt / completion) |
-| `llm_gateway_target_failures_total` | counter | `model`, `target`, `reason` (404, busy, timeout, unavailable…) |
+| `llm_gateway_tokens_total` | counter | `model`, `target`, `type` |
+| `llm_gateway_target_failures_total` | counter | `model`, `target`, `reason` |
 | `llm_gateway_upstream_inflight_requests` | gauge | `upstream` |
 | `llm_gateway_upstream_queue_waiting` | gauge | `upstream` |
 | `llm_gateway_upstream_queue_wait_seconds` | histogram | `upstream` |
 
-Токены берутся из `usage` ответа модели. Для стриминга шлюз сам добавляет `stream_options.include_usage`, если агент его не указал.
+`model` это роль, `target` это модель, которая ответила. Токены берутся из `usage` ответа. Для потоковых запросов шлюз сам добавляет `stream_options.include_usage`.
 
-**Алерты** ([deploy/prometheus/alerts.yml](deploy/prometheus/alerts.yml)): шлюз недоступен; больше 20% ошибок; p95 ответа больше 60 с; p95 до первого токена больше 15 с; частый fallback на цели; очередь не рассасывается. Алерты видны в Alertmanager и на дашборде. Отправка в Telegram включается в [deploy/alertmanager/alertmanager.yml](deploy/alertmanager/alertmanager.yml).
+Алерты в `deploy/prometheus/alerts.yml`:
 
-**Дашборд Grafana** подключается автоматически: текущее состояние, трафик по ролям и кодам, какая модель реально отвечает, fallback, p50/p95 латентности и времени до первого токена, токены, очередь, память шлюза.
+| Алерт | Условие |
+|---|---|
+| LLMGatewayDown | шлюз недоступен 1 минуту |
+| LLMHighErrorRate | больше 20% ответов 5xx и 429 за 5 минут |
+| LLMSlowResponses | p95 ответа больше 60 с в течение 10 минут |
+| LLMSlowFirstToken | p95 до первого токена больше 15 с в течение 10 минут |
+| LLMFrequentFallback | больше 5 неудачных попыток одной модели за 15 минут |
+| LLMQueueBacklog | в очереди больше 2 запросов в течение 5 минут |
 
-**Трейсы:** `POST /v1/chat/completions` → `attempt <upstream>/<model>` на каждую попытку → `upstream <name>` (HTTP-запрос к модели). Шлюз принимает `traceparent` от агентов и передаёт его модели, поэтому трейс агента, шлюза и модели получается сквозным.
+Alertmanager по умолчанию только показывает алерты. Отправка в Telegram закомментирована в `deploy/alertmanager/alertmanager.yml`.
 
-## Разработка
+Дашборд Grafana подключается автоматически из `deploy/grafana/`.
 
-```bash
-make check       # go mod tidy -diff, gofumpt, goimports, golangci-lint (gosec, errorlint, revive, modernize…)
-make test        # тесты с покрытием
-make test-race   # тесты с race detector
-make docker      # образ llm-gateway:dev (distroless, ~30 MB)
-```
+Спаны: `POST /v1/chat/completions`, внутри `attempt <upstream>/<model>` на каждую попытку, внутри `upstream <имя>` на HTTP-запрос к модели. Заголовок `traceparent` от клиента принимается и передаётся в модель. Когда трейсы включены, в каждой строке лога о запросе есть `traceId`.
 
-Тесты используют фейковый OpenAI-совместимый апстрим на `httptest`: проверяются подмена модели, параметры ролей, fallback, очередь, стриминг без буферизации, отмена при отключении клиента, метрики, токены из потока, вложенность span и передача `traceparent`. CI на каждый push: линтеры, тесты с `-race`, проверка конфигов Prometheus, Alertmanager и compose, сборка образа.
+## Make
+
+| Команда | Что делает |
+|---|---|
+| `make run` | запустить шлюз локально с `config.yaml` |
+| `make build` | собрать бинарник в `bin/` |
+| `make test` | тесты с покрытием |
+| `make test-race` | тесты с race detector |
+| `make check` | `go mod tidy -diff`, форматирование, golangci-lint |
+| `make format` | применить gofumpt и goimports |
+| `make docker` | собрать образ `llm-gateway:dev` |
+| `make up` / `make down` | поднять / остановить стек в Docker |
+| `make ps` | состояние контейнеров и потребление памяти |
+| `make logs` | логи шлюза |
+| `make pull MODEL=...` | скачать модель в Ollama из compose |
+| `make models` | список моделей и что загружено в видеопамять |
+| `make smoke` | 5 коротких запросов к роли small |
+
+## Структура
 
 ```text
-cmd/llm-gateway/      точка входа, флаги, slog, сигналы, подкоманда healthcheck
+cmd/llm-gateway/      main, флаги, логи, сигналы, подкоманда healthcheck
 internal/config/      загрузка и проверка YAML
-internal/server/      маршруты, chat completions, fallback, разбор usage, graceful shutdown
-internal/upstream/    HTTP-клиент к апстриму и очередь слотов
+internal/server/      HTTP-обработчики, fallback, стриминг, разбор usage
+internal/upstream/    HTTP-клиент к апстриму и очередь
 internal/metrics/     метрики Prometheus
-internal/telemetry/   трейсы OpenTelemetry (OTLP)
-deploy/               Prometheus, алерты, Alertmanager, Grafana, конфиг шлюза для Docker
-compose.yaml          стек целиком, .env.example - его настройки
+internal/telemetry/   трейсы OpenTelemetry
+deploy/               конфиги шлюза, Prometheus, Alertmanager, Grafana для Docker
+compose.yaml          весь стек
 ```
