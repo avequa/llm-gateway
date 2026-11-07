@@ -1,4 +1,3 @@
-# Образ шлюза: статический бинарник на distroless, запуск от непривилегированного пользователя
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./

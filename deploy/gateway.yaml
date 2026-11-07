@@ -1,12 +1,11 @@
-# Конфиг шлюза для docker-compose: слушает все интерфейсы контейнера, Ollama - на хосте
-# на хосте Ollama должна слушать не только 127.0.0.1, см. README (OLLAMA_HOST=0.0.0.0:11434)
+# Конфиг шлюза для docker-compose: слушает все интерфейсы контейнера, Ollama - соседний сервис ollama
 server:
   addr: 0.0.0.0:4000
   shutdown_timeout: 15s
 
 upstreams:
   ollama:
-    base_url: http://host.docker.internal:11434/v1
+    base_url: http://ollama:11434/v1
     timeout: 120s
     max_concurrent: 1
     queue_timeout: 180s

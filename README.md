@@ -30,7 +30,7 @@ flowchart LR
 - **Параметры ролей.** `params` — значения по умолчанию (например, `reasoning_effort: none`, `temperature`), `max_tokens` — потолок длины ответа.
 - **Прозрачный прокси.** Тело запроса не переписывается целиком, меняется только `model`: `tools`, `response_format` и любые новые поля API проходят как есть. Стриминг SSE передаётся по кусочкам сразу. Если агент отключился, генерация в модели отменяется.
 - **Наблюдаемость.** Метрики Prometheus по ролям и моделям: запросы, латентность, время до первого токена, токены, fallback, очередь. Трейсы OpenTelemetry с атрибутами `gen_ai.*`, `traceId` в каждой строке лога.
-- **Готовый стек** в docker-compose: Prometheus с правилами алертов, Alertmanager, Grafana с дашбордом, Jaeger.
+- **Готовый стек** в docker-compose: Ollama на GPU, Prometheus с правилами алертов, Alertmanager, Grafana с дашбордом, Jaeger.
 - **Аккуратная эксплуатация:** graceful shutdown, ошибки в формате OpenAI, строгая проверка конфига (все ошибки сразу), ключи API только из окружения, образ distroless от непривилегированного пользователя, healthcheck без shell.
 
 ## Быстрый старт
@@ -52,27 +52,30 @@ curl -s localhost:4000/v1/chat/completions -H 'Content-Type: application/json' \
 
 В заголовках ответа `X-Gateway-Target` показывает, какая модель ответила, а `X-Gateway-Attempts` — с какой попытки.
 
-### Вместе со стеком наблюдаемости
+### Всё в Docker: Ollama на GPU и стек наблюдаемости
 
-Ollama остаётся на хосте и работает с GPU напрямую, остальное поднимается в Docker. Чтобы контейнер шлюза достучался до Ollama, она должна слушать не только `127.0.0.1`:
+Нужны Docker с поддержкой NVIDIA GPU (Docker Desktop на Windows с WSL 2 или Docker Engine с NVIDIA Container Toolkit) и одна маленькая модель.
 
 ```bash
-sudo systemctl edit ollama          # добавить в [Service]: Environment="OLLAMA_HOST=0.0.0.0:11434"
-sudo systemctl restart ollama
-
-make up                             # шлюз, Prometheus, Alertmanager, Grafana, Jaeger
+cp .env.example .env                # путь к уже скачанным моделям Ollama, если они есть
+make up                             # Ollama, шлюз, Prometheus, Alertmanager, Grafana, Jaeger
+make pull MODEL=qwen3:4b            # если моделей ещё нет
+make models                         # PROCESSOR должен быть 100% GPU после первого запроса
 make smoke                          # пять коротких запросов для проверки
 ```
 
 | Сервис | Адрес |
 |---|---|
 | Шлюз | http://127.0.0.1:4000 |
+| Ollama | http://127.0.0.1:11434 |
 | Grafana (дашборд «LLM Gateway», вход admin / admin) | http://127.0.0.1:3000 |
 | Prometheus | http://127.0.0.1:9090 |
 | Alertmanager | http://127.0.0.1:9093 |
 | Jaeger | http://127.0.0.1:16686 |
 
-Все порты открыты только на `127.0.0.1`. У каждого контейнера свой лимит памяти, весь стек занимает около 0.5 ГБ RAM, видеокарту не трогает. `make down` останавливает стек, `make ps` показывает потребление памяти.
+Шлюз находит Ollama по имени сервиса, поэтому стек одинаково работает на Linux и в Docker Desktop с WSL. Если на машине уже стоит Ollama как системная служба, её стоит выключить (`sudo systemctl disable --now ollama`): иначе две Ollama делят одну видеокарту. Уже скачанные модели подключаются в контейнер из папки, указанной в `.env`, и заново не скачиваются.
+
+Ollama ограничена одним запросом на модель и двумя моделями в видеопамяти, через 5 минут простоя модель выгружается. Все порты открыты только на `127.0.0.1`. У сервисов наблюдаемости свои лимиты памяти, вместе они занимают около 0.5 ГБ RAM. `make down` останавливает стек, `make ps` показывает потребление памяти.
 
 ### Из Python
 
@@ -190,5 +193,5 @@ internal/upstream/    HTTP-клиент к апстриму и очередь с
 internal/metrics/     метрики Prometheus
 internal/telemetry/   трейсы OpenTelemetry (OTLP)
 deploy/               Prometheus, алерты, Alertmanager, Grafana, конфиг шлюза для Docker
-compose.yaml          стек целиком
+compose.yaml          стек целиком, .env.example - его настройки
 ```

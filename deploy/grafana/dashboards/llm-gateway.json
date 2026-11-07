@@ -547,7 +547,7 @@
             "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
-              "mode": "normal"
+              "mode": "none"
             }
           }
         },
@@ -599,7 +599,7 @@
             "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
-              "mode": "normal"
+              "mode": "none"
             }
           }
         },
@@ -651,7 +651,7 @@
             "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
-              "mode": "normal"
+              "mode": "none"
             }
           }
         },

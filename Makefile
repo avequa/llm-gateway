@@ -3,7 +3,7 @@ GO ?= go
 VERSION ?= dev
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build run test test-race check format docker up down logs smoke ps
+.PHONY: build run test test-race check format docker up down logs smoke ps pull models
 
 build: ## Собрать бинарник в bin/
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/llm-gateway
@@ -28,7 +28,7 @@ check: ## Проверить go.mod, форматирование и код ли
 docker: ## Собрать Docker-образ llm-gateway:$(VERSION)
 	docker build --build-arg VERSION=$(VERSION) -t llm-gateway:$(VERSION) .
 
-up: ## Поднять шлюз, Prometheus, Alertmanager, Grafana и Jaeger (Ollama - на хосте)
+up: ## Поднять шлюз, Ollama на GPU, Prometheus, Alertmanager, Grafana и Jaeger
 	VERSION=$(VERSION) docker compose up -d --build
 
 down: ## Остановить стек (данные Prometheus и Grafana сохраняются в volumes)
@@ -37,6 +37,13 @@ down: ## Остановить стек (данные Prometheus и Grafana со�
 ps: ## Состояние контейнеров и потребление памяти
 	docker compose ps
 	docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}"
+
+pull: ## Скачать модель в Ollama из compose: make pull MODEL=qwen3:1.7b
+	docker compose exec ollama ollama pull $(MODEL)
+
+models: ## Модели в Ollama и какие сейчас загружены в видеопамять (PROCESSOR должен быть 100% GPU)
+	docker compose exec ollama ollama list
+	docker compose exec ollama ollama ps
 
 logs: ## Логи шлюза в реальном времени
 	docker compose logs -f gateway
