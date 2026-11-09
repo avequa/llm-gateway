@@ -1,4 +1,5 @@
 # Конфиг шлюза для docker-compose: слушает все интерфейсы контейнера, Ollama - соседний сервис ollama
+# Модели лёгкие (до 1.7B), чтобы не грузить видеокарту ноутбука: qwen3:4b думала до 2048 токенов на ответ
 server:
   addr: 0.0.0.0:4000
   shutdown_timeout: 15s
@@ -18,17 +19,18 @@ models:
     max_tokens: 512
     targets:
       - {upstream: ollama, model: qwen3:1.7b}
-      - {upstream: ollama, model: qwen3:4b}
+      - {upstream: ollama, model: qwen3:0.6b}
   main:
     params:
       reasoning_effort: none
-    max_tokens: 2048
+      temperature: 0.2
+    max_tokens: 1024
     targets:
-      - {upstream: ollama, model: qwen3:4b}
       - {upstream: ollama, model: qwen3:1.7b}
+      - {upstream: ollama, model: qwen3:0.6b}
   validator:
     params:
       temperature: 0
-    max_tokens: 1024
+    max_tokens: 512
     targets:
-      - {upstream: ollama, model: gemma3:4b}
+      - {upstream: ollama, model: gemma3:1b}

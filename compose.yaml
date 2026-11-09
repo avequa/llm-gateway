@@ -41,6 +41,7 @@ services:
       OLLAMA_KEEP_ALIVE: 5m          # через 5 минут простоя модель выгружается из видеопамяти
       OLLAMA_NUM_PARALLEL: "1"       # один запрос на модель за раз, очередь держит шлюз
       OLLAMA_MAX_LOADED_MODELS: "2"  # не больше двух моделей в видеопамяти (8 ГБ)
+      OLLAMA_CONTEXT_LENGTH: "8192"
     deploy:
       resources:
         reservations:
